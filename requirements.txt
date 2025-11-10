@@ -1,8 +1,8 @@
 streamlit
 torch
 torchvision
-opencv-python
+opencv-python-headless
 numpy
 Pillow
+pandas
 requests
-git+https://github.com/ultralytics/yolov5.git
