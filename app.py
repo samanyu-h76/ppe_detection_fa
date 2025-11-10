@@ -74,17 +74,50 @@ def draw_boxes(
 # ---------- MODEL LOADING ----------
 @st.cache_resource(show_spinner=False)
 def load_model(local_weights_path: str):
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    # requires yolov5 dependency in requirements.txt (git+https://github.com/ultralytics/yolov5.git)
-    model = torch.hub.load(
-    "ultralytics/yolov5",
-    "custom",
-    path=local_weights_path,
-    trust_repo=True  # optional, silences a warning
-)
+    import torch, os, sys, zipfile, tempfile, requests as _req
 
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    # 1) Try the normal Torch Hub way (fastest)
+    try:
+        model = torch.hub.load(
+            "ultralytics/yolov5",
+            "custom",
+            path=local_weights_path,
+            trust_repo=True,
+            force_reload=False,   # set True if you need to refresh the cache
+        )
+        model.to(device)
+        return model
+    except Exception as e:
+        st.warning(f"Hub load failed, using local fallback… ({e.__class__.__name__})")
+
+    # 2) Fallback: download YOLOv5 repo zip locally and load from that folder
+    y5_dir = pathlib.Path(".yolov5_repo")
+    repo_dir = y5_dir / "yolov5-master"
+    if not repo_dir.exists():
+        y5_dir.mkdir(exist_ok=True)
+        url = "https://github.com/ultralytics/yolov5/archive/refs/heads/master.zip"
+        zpath = y5_dir / "yolov5.zip"
+        with _req.get(url, stream=True, timeout=60) as r:
+            r.raise_for_status()
+            with open(zpath, "wb") as f:
+                for chunk in r.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
+        with zipfile.ZipFile(zpath) as zf:
+            zf.extractall(y5_dir)
+
+    # now load via local repo path
+    model = torch.hub.load(
+        str(repo_dir),
+        "custom",
+        path=local_weights_path,
+        source="local",
+    )
     model.to(device)
     return model
+
 
 # ---------- APP UI ----------
 st.title("🦺 PPE Compliance Detection (YOLOv5)")
