@@ -76,7 +76,13 @@ def draw_boxes(
 def load_model(local_weights_path: str):
     device = "cuda" if torch.cuda.is_available() else "cpu"
     # requires yolov5 dependency in requirements.txt (git+https://github.com/ultralytics/yolov5.git)
-    model = torch.hub.load("ultralytics/yolov5", "custom", path=local_weights_path, source="local")
+    model = torch.hub.load(
+    "ultralytics/yolov5",
+    "custom",
+    path=local_weights_path,
+    trust_repo=True  # optional, silences a warning
+)
+
     model.to(device)
     return model
 
