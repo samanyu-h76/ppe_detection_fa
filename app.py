@@ -1,8 +1,5 @@
 # app.py
-import os
-import io
-import time
-import pathlib
+import os, io, pathlib
 from typing import Tuple
 
 import requests
@@ -11,54 +8,47 @@ from PIL import Image
 import cv2
 import streamlit as st
 import torch
+import importlib
+from pathlib import Path
 
 # ---------- CONFIG ----------
 st.set_page_config(page_title="PPE Compliance Detection", layout="centered")
 
-OWNER = "samanyu-h76"
-REPO = "ppe_detection_fa"
-TAG = "v1.0"
-FILENAME = "best.pt"
-
-WEIGHTS_URL = f"https://github.com/samanyu-h76/ppe_detection_fa/releases/download/v1.0/best.pt"
+# your release asset (keep this exactly as your GitHub Release URL)
+WEIGHTS_URL = "https://github.com/samanyu-h76/ppe_detection_fa/releases/download/v1.0/best.pt"
 WEIGHTS_DIR = pathlib.Path("weights")
 WEIGHTS_DIR.mkdir(exist_ok=True)
-WEIGHTS_PATH = WEIGHTS_DIR / FILENAME
+WEIGHTS_PATH = WEIGHTS_DIR / "best.pt"
 
 # ---------- UTIL: DOWNLOAD WEIGHTS ----------
 def download_weights() -> str:
-    """Download weights from GitHub Releases if not present."""
+    """Download weights from GitHub Releases if not present (cached on disk)."""
     if WEIGHTS_PATH.exists() and WEIGHTS_PATH.stat().st_size > 0:
         return str(WEIGHTS_PATH)
 
     st.info("Downloading model weights (first run)…")
-    with requests.get(WEIGHTS_URL, stream=True, timeout=60) as r:
+    with requests.get(WEIGHTS_URL, stream=True, timeout=120) as r:
         r.raise_for_status()
-        total = int(r.headers.get("content-length", 0))
-        downloaded = 0
-        chunk = 8192
+        total = int(r.headers.get("content-length", 0)) or None
+        bytes_dl = 0
         with open(WEIGHTS_PATH, "wb") as f:
-            for data in r.iter_content(chunk_size=chunk):
-                if data:
-                    f.write(data)
-                    downloaded += len(data)
-                    if total:
-                        st.progress(min(downloaded / total, 1.0))
+            for chunk in r.iter_content(chunk_size=8192):
+                if not chunk:
+                    continue
+                f.write(chunk)
+                if total:
+                    bytes_dl += len(chunk)
+                    st.progress(min(bytes_dl / total, 1.0))
     return str(WEIGHTS_PATH)
 
-# ---------- UTIL: IMAGE HELPERS ----------
+# ---------- IMAGE HELPERS ----------
 def pil_to_cv2(img: Image.Image) -> np.ndarray:
     return cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
 
 def cv2_to_pil(img: np.ndarray) -> Image.Image:
     return Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
 
-def draw_boxes(
-    image_bgr: np.ndarray,
-    boxes: np.ndarray,
-    classes: list,
-    names: dict,
-) -> np.ndarray:
+def draw_boxes(image_bgr: np.ndarray, boxes: np.ndarray, names: dict) -> np.ndarray:
     img = image_bgr.copy()
     for *xyxy, conf, cls in boxes:
         x1, y1, x2, y2 = map(int, xyxy)
@@ -68,107 +58,80 @@ def draw_boxes(
         cv2.rectangle(img, (x1, y1), (x2, y2), (0, 165, 255), 2)
         (tw, th), baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
         cv2.rectangle(img, (x1, y1 - th - baseline), (x1 + tw, y1), (0, 165, 255), -1)
-        cv2.putText(img, label, (x1, y1 - baseline), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1, cv2.LINE_AA)
+        cv2.putText(img, label, (x1, y1 - baseline), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+                    (0, 0, 0), 1, cv2.LINE_AA)
     return img
 
-# ---------- MODEL LOADING ----------
-@st.cache_resource(show_spinner=False)
-def load_model(local_weights_path: str):
-    import torch, os, sys, zipfile, tempfile, requests as _req
+# ---------- MODEL LOADING (LOCAL, NO INTERNET) ----------
+@st.cache_resource(show_spinner=True)
+def load_model_local(weights_path: str):
+    """
+    Load YOLOv5 from the installed package in site-packages,
+    then load your custom weights.
+    """
+    # find installed yolov5 package path
+    y5 = importlib.import_module("yolov5")
+    repo_dir = Path(y5.__file__).resolve().parent  # .../site-packages/yolov5
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-
-    # 1) Try the normal Torch Hub way (fastest)
-    try:
-        model = torch.hub.load(
-            "ultralytics/yolov5",
-            "custom",
-            path=local_weights_path,
-            trust_repo=True,
-            force_reload=False,   # set True if you need to refresh the cache
-        )
-        model.to(device)
-        return model
-    except Exception as e:
-        st.warning(f"Hub load failed, using local fallback… ({e.__class__.__name__})")
-
-    # 2) Fallback: download YOLOv5 repo zip locally and load from that folder
-    y5_dir = pathlib.Path(".yolov5_repo")
-    repo_dir = y5_dir / "yolov5-master"
-    if not repo_dir.exists():
-        y5_dir.mkdir(exist_ok=True)
-        url = "https://github.com/ultralytics/yolov5/archive/refs/heads/master.zip"
-        zpath = y5_dir / "yolov5.zip"
-        with _req.get(url, stream=True, timeout=60) as r:
-            r.raise_for_status()
-            with open(zpath, "wb") as f:
-                for chunk in r.iter_content(chunk_size=8192):
-                    if chunk:
-                        f.write(chunk)
-        with zipfile.ZipFile(zpath) as zf:
-            zf.extractall(y5_dir)
-
-    # now load via local repo path
     model = torch.hub.load(
-        str(repo_dir),
+        str(repo_dir),          # local repo path
         "custom",
-        path=local_weights_path,
-        source="local",
+        path=weights_path,
+        source="local"          # <-- key bit: no remote hub calls
     )
-    model.to(device)
+    model.to(device).eval()
     return model
 
-
-# ---------- APP UI ----------
+# ---------- UI ----------
 st.title("🦺 PPE Compliance Detection (YOLOv5)")
-st.caption("Downloads weights from GitHub Releases on first run, then caches the model.")
+st.caption("Weights download once from GitHub Releases. YOLOv5 code is loaded locally (no runtime hub calls).")
 
 conf_thres = st.sidebar.slider("Confidence threshold", 0.1, 0.9, 0.25, 0.05)
-iou_thres = st.sidebar.slider("IOU threshold (NMS)", 0.1, 0.9, 0.45, 0.05)
+iou_thres  = st.sidebar.slider("IOU threshold (NMS)", 0.1, 0.9, 0.45, 0.05)
 
 uploaded = st.file_uploader("Upload an image", type=["jpg", "jpeg", "png"])
 
-# Prepare model (download + load) once
+# prepare model once
 with st.spinner("Preparing model…"):
-    local_path = download_weights()
-    model = load_model(local_path)
-    model.conf = float(conf_thres)  # type: ignore
-    model.iou = float(iou_thres)    # type: ignore
+    local_weights = download_weights()
+    model = load_model_local(local_weights)
+    model.conf = float(conf_thres)
+    model.iou  = float(iou_thres)
 
-if uploaded is None:
+if not uploaded:
     st.info("Upload an image to run detection.")
     st.stop()
 
-# Read image
-image_bytes = uploaded.read()
-pil_img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+# read image
+img_bytes = uploaded.read()
+pil_img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
 st.image(pil_img, caption="Uploaded image", use_container_width=True)
 
-# Run inference
+# inference
 with st.spinner("Running detection…"):
     results = model(pil_img, size=640)
-    # boxes: [x1,y1,x2,y2,conf,cls]
-    boxes = results.xyxy[0].cpu().numpy()
+    boxes = results.xyxy[0].cpu().numpy()  # [x1,y1,x2,y2,conf,cls]
     names = results.names
 
-# Draw + show
-img_bgr = pil_to_cv2(pil_img)
-annotated = draw_boxes(img_bgr, boxes, classes=None, names=names)
+# draw + show
+bgr = pil_to_cv2(pil_img)
+annotated = draw_boxes(bgr, boxes, names)
 st.image(cv2_to_pil(annotated), caption="Detections", use_container_width=True)
 
-# Small table
+# table
 df = results.pandas().xyxy[0]
 if len(df) == 0:
     st.warning("No objects detected.")
 else:
     counts = df["name"].value_counts().to_dict()
-    cols = st.columns(2)
-    with cols[0]:
+    c1, c2 = st.columns(2)
+    with c1:
         st.subheader("Detections")
         st.dataframe(df[["name", "confidence", "xmin", "ymin", "xmax", "ymax"]], use_container_width=True)
-    with cols[1]:
+    with c2:
         st.subheader("Counts")
         for k, v in counts.items():
             st.write(f"- **{k}**: {v}")
 
-st.caption("Tip: first load might take a bit while weights download. Subsequent runs are cached.")
+st.caption("Tip: first load might take a bit while weights
