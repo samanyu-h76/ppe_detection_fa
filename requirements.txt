@@ -1,7 +1,6 @@
 streamlit
 torch
 torchvision
-git+https://github.com/ultralytics/yolov5.git@v7.0
 ultralytics
 pandas
 numpy
