@@ -1,11 +1,11 @@
---extra-index-url https://download.pytorch.org/whl/cpu
-
 streamlit==1.38.0
 torch==2.3.1
 torchvision==0.18.1
 pandas==2.2.2
 numpy==1.26.4
 pillow==10.3.0
+matplotlib
+pyyaml
 opencv-python-headless==4.10.0.84
 requests==2.32.3
 git+https://github.com/ultralytics/yolov5.git@v7.0
