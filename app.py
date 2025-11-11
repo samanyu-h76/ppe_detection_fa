@@ -1,3 +1,2 @@
 import streamlit as st
-st.set_page_config(page_title="Sanity")
-st.title("It boots ✅")
+st.title("Boot test ✅")
